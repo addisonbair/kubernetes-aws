@@ -1,0 +1,136 @@
+#!/bin/bash
+#
+# chkconfig: - 24 76
+#
+# Description:         Basic script to open VPN tunnel and create route for entire VPC
+
+# Path variables
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# VPN Variables
+VPN_TUNN="tun0"
+VPN_USER="user"
+VPN_HOST="connect.everyonecounts.com"
+VPN_PASS="pass"
+PID="/var/run/openconnect.pid"
+TEMP_LOG="/tmp/status.txt"
+INFO="
+
+Usage: $(basename "$0") (start|stop|status|restart)
+
+"
+# IPtables
+VPC_CIDR="172.16.0.0/16"
+
+# Establish routing rules to set up VPN/NAT tunnel
+function exec_iptables(){
+    # Flush all the rules in IPfilter and NAT tables
+    /sbin/iptables --flush
+
+    # Flush all the rules in IPfilter and nat tables
+    /sbin/iptables --flush
+    /sbin/iptables --delete-chain
+    /sbin/iptables --table nat --flush
+    /sbin/iptables --table nat --delete-chain
+    /sbin/iptables --table mangle --flush
+    /sbin/iptables --table mangle --delete-chain
+
+    # Setup postrouting rules
+    /sbin/iptables -A POSTROUTING -t nat -o $VPN_TUNN -j MASQUERADE
+    /sbin/iptables -A POSTROUTING -t nat -s $VPC_CIDR -o eth0 -j MASQUERADE
+
+    ### ALLOW - VIPC CIDR
+    /sbin/iptables -A INPUT -p all -s $VPC_CIDR -j ACCEPT
+}
+
+# Connect to Cisco SSL VPN using passwords from stdin (passed by VPN_PASS variable created prior)
+function connect_vpn(){
+
+if [ -f $PID ]
+    then
+        printf "Openconnect is already running\n"
+        exit 1
+    else
+        openvpn --mktun --dev ${VPN_TUNN}
+        ifconfig ${VPN_TUNN} up
+        printf "Tunnel interface (${VPN_TUNN}) created!\n"
+        cp /etc/resolv.conf /etc/resolv.conf.orig
+        printf "Backed up /etc/resolv.conf!\n"
+        echo ${VPN_PASS} | openconnect -b --interface=${VPN_TUNN} --user=${VPN_USER} ${VPN_HOST} > $TEMP_LOG 2>&1
+        if ! grep -i "Got CONNECT response: HTTP/1.1 200 OK" $TEMP_LOG
+            then
+                printf "Openconnect failed to start!\n"
+                cat $TEMP_LOG
+                ifconfig ${VPN_TUNN} down
+                openvpn --rmtun --dev ${VPN_TUNN}
+                printf "Tunnel interface (${VPN_TUNN}) destroyed!\n"
+                cp /etc/resolv.conf.orig /etc/resolv.conf
+                printf "Restored original /etc/resolv.conf!\n"
+                exit 2
+            else
+                touch $PID
+                printf "Openconnect started!\n"
+                exec_iptables
+                printf "Routing started!\n"
+        fi
+fi
+}
+
+# Check if openconnect is running through PID file
+function check_openconnect(){
+
+if [ -f $PID ]
+    then
+        printf "Openconnect is running!\n"
+    else
+        printf "Openconnect is stopped\n"
+fi
+}
+
+# Confirm if PID file exists, then kill it immediately
+function kill_openconnect(){
+
+if [ -f $PID ]
+    then
+        rm -f $PID >/dev/null 2>&1
+        kill -9 $(pgrep openconnect) >/dev/null 2>&1
+        printf "Openconnect stopped!\n"
+        ifconfig ${VPN_TUNN} down
+        openvpn --rmtun --dev ${VPN_TUNN}
+        printf "Tunnel interface (${VPN_TUNN}) destroyed!\n"
+        cp /etc/resolv.conf.orig /etc/resolv.conf
+        printf "Restored original /etc/resolv.conf!\n"
+    else
+        printf "Openconnect is not running!\n"
+fi
+}
+
+case "$1" in
+
+    start)
+    
+        connect_vpn
+        ;;
+    
+    stop)
+    
+        kill_openconnect
+        ;;
+    
+    status)
+    
+        check_openconnect
+        ;;
+    
+    restart)
+    
+        $0 stop
+        $0 start
+        ;;
+    
+    *)
+    
+        echo "$INFO"
+        exit 0
+        ;;
+esac

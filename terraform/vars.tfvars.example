@@ -1,0 +1,4 @@
+project="my-app"
+env="testing"
+kube_fqdn="kube.domain.com"
+kops_state_store="domain-kops-store"
